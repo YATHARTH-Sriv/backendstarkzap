@@ -5,7 +5,10 @@ import type { TxActivityRepository } from "../db/tx-activity-repo.ts";
 import type { UserProfileRepository } from "../db/user-profile-repo.ts";
 import type { WalletRepository } from "../db/wallet-repo.ts";
 import type { RequestWithPrivyUser } from "../middleware/require-privy-user.ts";
-import { getErrorMessage, isLikelyFundingOrFeeConfigError } from "../services/error-utils.ts";
+import {
+    getErrorMessage,
+    isLikelyFundingOrFeeConfigError,
+} from "../services/error-utils.ts";
 import type { StarknetWalletService } from "../services/starknet-wallet.ts";
 import { toU256Calldata } from "../services/u256-utils.ts";
 
@@ -27,7 +30,10 @@ function normalizeUsernameQuery(raw: unknown): string {
     return "";
   }
 
-  return raw.trim().replace(/[^a-zA-Z0-9_]/g, "").slice(0, 20);
+  return raw
+    .trim()
+    .replace(/[^a-zA-Z0-9_]/g, "")
+    .slice(0, 20);
 }
 
 function normalizeAmount(raw: unknown): string {
@@ -79,7 +85,10 @@ function sanitizePaymentErrorMessage(rawMessage: string): string {
 function buildPaymentHint(rawMessage: string): string | undefined {
   const message = rawMessage.trim();
 
-  if (/starknet_addInvokeTransaction/i.test(message) || isLikelyFundingOrFeeConfigError(message)) {
+  if (
+    /starknet_addInvokeTransaction/i.test(message) ||
+    isLikelyFundingOrFeeConfigError(message)
+  ) {
     return "Ensure the sender wallet has enough balance for transfer plus network fees, then retry.";
   }
 
@@ -107,112 +116,154 @@ export function createPaymentsRouter(params: {
 
   const router = Router();
 
-  router.get("/api/payments/search-users", requirePrivyUser, async (req, res) => {
-    const typedReq = req as RequestWithPrivyUser;
-    const userId = typedReq.privyUserId;
+  router.get(
+    "/api/payments/search-users",
+    requirePrivyUser,
+    async (req, res) => {
+      const typedReq = req as RequestWithPrivyUser;
+      const userId = typedReq.privyUserId;
 
-    if (!userId) {
-      return res.status(401).json({ error: "User not authenticated" });
-    }
-
-    const query = normalizeUsernameQuery(req.query.q);
-    const limit = parseLimit(req.query.limit, 8, 25);
-
-    if (!query) {
-      return res.json({ users: [], query, limit });
-    }
-
-    try {
-      const users = await directPaymentRepo.searchUsersByUsername(query, limit, userId);
-      return res.json({ users, query, limit });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to search users";
-      return res.status(500).json({ error: message });
-    }
-  });
-
-  router.get("/api/payments/recent-contacts", requirePrivyUser, async (req, res) => {
-    const typedReq = req as RequestWithPrivyUser;
-    const userId = typedReq.privyUserId;
-
-    if (!userId) {
-      return res.status(401).json({ error: "User not authenticated" });
-    }
-
-    const limit = parseLimit(req.query.limit, 8, 20);
-
-    try {
-      const contacts = await directPaymentRepo.listRecentContacts(userId, limit);
-      return res.json({ contacts, limit });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to load recent contacts";
-      return res.status(500).json({ error: message });
-    }
-  });
-
-  router.get("/api/payments/history/:username", requirePrivyUser, async (req, res) => {
-    const typedReq = req as RequestWithPrivyUser;
-    const userId = typedReq.privyUserId;
-    const targetInput = normalizeRecipientInput(req.params.username);
-    const limit = parseLimit(req.query.limit, 30, 100);
-    const before = typeof req.query.before === "string" && req.query.before.trim().length > 0 ? req.query.before : undefined;
-
-    if (!userId) {
-      return res.status(401).json({ error: "User not authenticated" });
-    }
-
-    if (!targetInput) {
-      return res.status(400).json({ error: "recipient is required" });
-    }
-
-    try {
-      let targetWalletAddress = normalizeWalletAddress(targetInput);
-      let targetUsername: string | null = null;
-
-      if (targetWalletAddress) {
-        const userByWalletAddress = await directPaymentRepo.getUserByWalletAddress(targetWalletAddress);
-        if (userByWalletAddress) {
-          targetWalletAddress = userByWalletAddress.walletAddress;
-          targetUsername = userByWalletAddress.username;
-        }
-      } else {
-        const normalizedUsername = normalizeUsernameQuery(targetInput);
-        if (!normalizedUsername) {
-          return res.status(400).json({ error: "Invalid recipient username or wallet address" });
-        }
-
-        const userByUsername = await directPaymentRepo.getUserByUsername(normalizedUsername);
-        if (!userByUsername) {
-          return res.status(404).json({ error: "Recipient not found" });
-        }
-
-        targetWalletAddress = userByUsername.walletAddress;
-        targetUsername = userByUsername.username;
+      if (!userId) {
+        return res.status(401).json({ error: "User not authenticated" });
       }
 
-      if (!targetWalletAddress) {
-        return res.status(400).json({ error: "Invalid recipient username or wallet address" });
+      const query = normalizeUsernameQuery(req.query.q);
+      const limit = parseLimit(req.query.limit, 8, 25);
+
+      if (!query) {
+        return res.json({ users: [], query, limit });
       }
 
-      const history = await directPaymentRepo.loadBilateralHistory({
-        privyUserId: userId,
-        otherWalletAddress: targetWalletAddress,
-        limit,
-        before,
-      });
+      try {
+        const users = await directPaymentRepo.searchUsersByUsername(
+          query,
+          limit,
+          userId,
+        );
+        return res.json({ users, query, limit });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to search users";
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
 
-      return res.json({
-        username: targetUsername,
-        walletAddress: targetWalletAddress,
-        displayName: targetUsername ?? shortenWalletAddressForDisplay(targetWalletAddress),
-        history,
-        limit,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to load payment history";
-      return res.status(500).json({ error: message });
-    }
-  });
+  router.get(
+    "/api/payments/recent-contacts",
+    requirePrivyUser,
+    async (req, res) => {
+      const typedReq = req as RequestWithPrivyUser;
+      const userId = typedReq.privyUserId;
+
+      if (!userId) {
+        return res.status(401).json({ error: "User not authenticated" });
+      }
+
+      const limit = parseLimit(req.query.limit, 8, 20);
+
+      try {
+        const contacts = await directPaymentRepo.listRecentContacts(
+          userId,
+          limit,
+        );
+        return res.json({ contacts, limit });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to load recent contacts";
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  router.get(
+    "/api/payments/history/:username",
+    requirePrivyUser,
+    async (req, res) => {
+      const typedReq = req as RequestWithPrivyUser;
+      const userId = typedReq.privyUserId;
+      const targetInput = normalizeRecipientInput(req.params.username);
+      const limit = parseLimit(req.query.limit, 30, 100);
+      const before =
+        typeof req.query.before === "string" &&
+        req.query.before.trim().length > 0
+          ? req.query.before
+          : undefined;
+
+      if (!userId) {
+        return res.status(401).json({ error: "User not authenticated" });
+      }
+
+      if (!targetInput) {
+        return res.status(400).json({ error: "recipient is required" });
+      }
+
+      try {
+        let targetWalletAddress = normalizeWalletAddress(targetInput);
+        let targetUsername: string | null = null;
+        let targetPrivyUserId: string | null = null;
+
+        if (targetWalletAddress) {
+          const userByWalletAddress =
+            await directPaymentRepo.getUserByWalletAddress(targetWalletAddress);
+          if (userByWalletAddress) {
+            targetWalletAddress = userByWalletAddress.walletAddress;
+            targetUsername = userByWalletAddress.username;
+            targetPrivyUserId = userByWalletAddress.privyUserId;
+          }
+        } else {
+          const normalizedUsername = normalizeUsernameQuery(targetInput);
+          if (!normalizedUsername) {
+            return res
+              .status(400)
+              .json({ error: "Invalid recipient username or wallet address" });
+          }
+
+          const userByUsername =
+            await directPaymentRepo.getUserByUsername(normalizedUsername);
+          if (!userByUsername) {
+            return res.status(404).json({ error: "Recipient not found" });
+          }
+
+          targetWalletAddress = userByUsername.walletAddress;
+          targetUsername = userByUsername.username;
+          targetPrivyUserId = userByUsername.privyUserId;
+        }
+
+        if (!targetWalletAddress) {
+          return res
+            .status(400)
+            .json({ error: "Invalid recipient username or wallet address" });
+        }
+
+        const history = await directPaymentRepo.loadBilateralHistory({
+          privyUserId: userId,
+          otherWalletAddress: targetWalletAddress,
+          otherPrivyUserId: targetPrivyUserId ?? undefined,
+          limit,
+          before,
+        });
+
+        return res.json({
+          username: targetUsername,
+          walletAddress: targetWalletAddress,
+          displayName:
+            targetUsername ??
+            shortenWalletAddressForDisplay(targetWalletAddress),
+          history,
+          limit,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to load payment history";
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
 
   router.post("/api/payments/send", requirePrivyUser, async (req, res) => {
     const typedReq = req as RequestWithPrivyUser;
@@ -229,11 +280,15 @@ export function createPaymentsRouter(params: {
       amount?: unknown;
     };
 
-    const recipientInput = normalizeRecipientInput(recipient ?? walletAddress ?? username);
+    const recipientInput = normalizeRecipientInput(
+      recipient ?? walletAddress ?? username,
+    );
     const normalizedAmount = normalizeAmount(amount);
 
     if (!recipientInput) {
-      return res.status(400).json({ error: "recipient username or wallet address is required" });
+      return res
+        .status(400)
+        .json({ error: "recipient username or wallet address is required" });
     }
 
     if (!normalizedAmount) {
@@ -247,11 +302,25 @@ export function createPaymentsRouter(params: {
       ]);
 
       if (!senderProfile?.username) {
-        return res.status(409).json({ error: "Set username in onboarding before sending payments" });
+        return res.status(409).json({
+          error: "Set username in onboarding before sending payments",
+        });
       }
 
       if (!senderWallet) {
-        return res.status(404).json({ error: "No Starknet wallet found for sender" });
+        return res
+          .status(404)
+          .json({ error: "No Starknet wallet found for sender" });
+      }
+
+      let senderWalletAddress: string;
+
+      try {
+        senderWalletAddress = fromAddress(senderWallet.address);
+      } catch {
+        return res
+          .status(500)
+          .json({ error: "Sender wallet address is invalid" });
       }
 
       let recipientWalletAddress = normalizeWalletAddress(recipientInput);
@@ -259,7 +328,10 @@ export function createPaymentsRouter(params: {
       let recipientPrivyUserId: string | null = null;
 
       if (recipientWalletAddress) {
-        const recipientByWalletAddress = await directPaymentRepo.getUserByWalletAddress(recipientWalletAddress);
+        const recipientByWalletAddress =
+          await directPaymentRepo.getUserByWalletAddress(
+            recipientWalletAddress,
+          );
         if (recipientByWalletAddress) {
           recipientWalletAddress = recipientByWalletAddress.walletAddress;
           recipientUsername = recipientByWalletAddress.username;
@@ -268,12 +340,18 @@ export function createPaymentsRouter(params: {
       } else {
         const recipientUsernameQuery = normalizeUsernameQuery(recipientInput);
         if (!recipientUsernameQuery) {
-          return res.status(400).json({ error: "Invalid recipient username or wallet address" });
+          return res
+            .status(400)
+            .json({ error: "Invalid recipient username or wallet address" });
         }
 
-        const recipientByUsername = await directPaymentRepo.getUserByUsername(recipientUsernameQuery);
+        const recipientByUsername = await directPaymentRepo.getUserByUsername(
+          recipientUsernameQuery,
+        );
         if (!recipientByUsername) {
-          return res.status(404).json({ error: "Recipient username not found" });
+          return res
+            .status(404)
+            .json({ error: "Recipient username not found" });
         }
 
         recipientWalletAddress = recipientByUsername.walletAddress;
@@ -282,23 +360,40 @@ export function createPaymentsRouter(params: {
       }
 
       if (!recipientWalletAddress) {
-        return res.status(400).json({ error: "Invalid recipient username or wallet address" });
+        return res
+          .status(400)
+          .json({ error: "Invalid recipient username or wallet address" });
       }
 
-      const recipientDisplayName = recipientUsername ?? shortenWalletAddressForDisplay(recipientWalletAddress);
+      try {
+        recipientWalletAddress = fromAddress(recipientWalletAddress);
+      } catch {
+        return res
+          .status(400)
+          .json({ error: "Invalid recipient username or wallet address" });
+      }
+
+      const recipientDisplayName =
+        recipientUsername ??
+        shortenWalletAddressForDisplay(recipientWalletAddress);
 
       if (
-        recipientPrivyUserId === senderUserId
-        || recipientWalletAddress.toLowerCase() === senderWallet.address.toLowerCase()
+        recipientPrivyUserId === senderUserId ||
+        recipientWalletAddress.toLowerCase() ===
+          senderWalletAddress.toLowerCase()
       ) {
-        return res.status(400).json({ error: "You cannot send payment to yourself" });
+        return res
+          .status(400)
+          .json({ error: "You cannot send payment to yourself" });
       }
 
       const presets = getPresets(chainId);
       const STRK = presets.STRK;
 
       if (!STRK) {
-        return res.status(500).json({ error: "STRK token preset not available for configured chain" });
+        return res.status(500).json({
+          error: "STRK token preset not available for configured chain",
+        });
       }
 
       const parsedAmount = Amount.parse(normalizedAmount, STRK);
@@ -309,10 +404,16 @@ export function createPaymentsRouter(params: {
       let userWallet;
 
       try {
-        userWallet = await walletService.ensureWalletReadyForWrites(senderWallet);
+        userWallet =
+          await walletService.ensureWalletReadyForWrites(senderWallet);
       } catch (error) {
-        const walletNotReady = walletService.buildWalletNotReadyResponse(error, senderWallet.address);
-        return res.status(walletNotReady.statusCode).json(walletNotReady.payload);
+        const walletNotReady = walletService.buildWalletNotReadyResponse(
+          error,
+          senderWallet.address,
+        );
+        return res
+          .status(walletNotReady.statusCode)
+          .json(walletNotReady.payload);
       }
 
       const senderBalance = await userWallet.balanceOf(STRK);
@@ -329,19 +430,23 @@ export function createPaymentsRouter(params: {
       const transferCall = {
         contractAddress: STRK.address,
         entrypoint: "transfer",
-        calldata: [fromAddress(recipientWalletAddress), amountLow, amountHigh],
+        calldata: [recipientWalletAddress, amountLow, amountHigh],
       };
 
-      const execution = await walletService.executeWithOogRetry(userWallet, transferCall);
+      const execution = await walletService.executeWithOogRetry(
+        userWallet,
+        transferCall,
+      );
 
       const amountRaw = amountBase.toString();
       const amountUnit = parsedAmount.toUnit();
+      const senderDisplayName = senderProfile.username;
 
       await Promise.all([
         directPaymentRepo.savePayment({
           senderPrivyUserId: senderUserId,
           senderUsername: senderProfile.username,
-          senderWalletAddress: senderWallet.address,
+          senderWalletAddress: senderWalletAddress,
           recipientPrivyUserId,
           recipientUsername: recipientDisplayName,
           recipientWalletAddress,
@@ -376,6 +481,24 @@ export function createPaymentsRouter(params: {
             executionMode: execution.executionMode,
           },
         }),
+        recipientPrivyUserId
+          ? txActivityRepo.record({
+              privyUserId: recipientPrivyUserId,
+              action: "Direct Payment Received",
+              status: "success",
+              txHash: execution.txHash,
+              explorerUrl: execution.explorerUrl,
+              metadata: {
+                senderUsername: senderProfile.username,
+                senderWalletAddress: senderWalletAddress,
+                senderDisplayName,
+                amountRaw,
+                amountUnit,
+                tokenSymbol: STRK.symbol,
+                executionMode: execution.executionMode,
+              },
+            })
+          : Promise.resolve(),
       ]);
 
       return res.json({
@@ -403,7 +526,8 @@ export function createPaymentsRouter(params: {
       });
 
       try {
-        const senderProfile = await userProfileRepo.getByPrivyUserId(senderUserId);
+        const senderProfile =
+          await userProfileRepo.getByPrivyUserId(senderUserId);
         if (senderProfile?.username) {
           await txActivityRepo.record({
             privyUserId: senderUserId,
@@ -420,10 +544,12 @@ export function createPaymentsRouter(params: {
         // Ignore logging failures.
       }
 
-      return res.status(isLikelyFundingOrFeeConfigError(rawMessage) ? 402 : 500).json({
-        error: message,
-        hint,
-      });
+      return res
+        .status(isLikelyFundingOrFeeConfigError(rawMessage) ? 402 : 500)
+        .json({
+          error: message,
+          hint,
+        });
     }
   });
 

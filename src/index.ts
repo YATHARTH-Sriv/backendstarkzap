@@ -10,6 +10,7 @@ import { createRoomMarketRepository } from "./db/room-market-repo.ts";
 import { createTxActivityRepository } from "./db/tx-activity-repo.ts";
 import { createUserProfileRepository } from "./db/user-profile-repo.ts";
 import { createWalletRepository } from "./db/wallet-repo.ts";
+import { createOnboardingFundingRepository } from "./db/onboarding-funding-repo.ts";
 import { createRequirePrivyUser } from "./middleware/require-privy-user.ts";
 import { createCounterRouter } from "./routes/counter-routes.ts";
 import { createChatRouter } from "./routes/chat-routes.ts";
@@ -42,6 +43,7 @@ const roomMarketRepo = createRoomMarketRepository(db);
 const txActivityRepo = createTxActivityRepository(db);
 const userProfileRepo = createUserProfileRepository(db);
 const directPaymentRepo = createDirectPaymentRepository(db);
+const onboardingFundingRepo = createOnboardingFundingRepository(db);
 const requirePrivyUser = createRequirePrivyUser(privy, walletRepo);
 
 const walletService = createStarknetWalletService({
@@ -82,11 +84,18 @@ app.use(
 );
 app.use(
   createWalletRouter({
+    sdk,
+    chainId: config.chainId,
     privy,
     walletRepo,
+    onboardingFundingRepo,
     requirePrivyUser,
     walletService,
     txActivityRepo,
+    onboardingFundingEnabled: config.onboardingFundingEnabled,
+    onboardingFundingAmountStrk: config.onboardingFundingAmountStrk,
+    onboardingFunderAddress: config.onboardingFunderAddress,
+    onboardingFunderPrivateKey: config.onboardingFunderPrivateKey,
   }),
 );
 app.use(

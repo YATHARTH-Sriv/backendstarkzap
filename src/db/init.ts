@@ -33,6 +33,25 @@ export async function initDatabase(db: Pool) {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS user_onboarding_funding (
+      id UUID PRIMARY KEY,
+      privy_user_id TEXT NOT NULL UNIQUE REFERENCES app_users(privy_user_id) ON DELETE CASCADE,
+      wallet_address TEXT NOT NULL,
+      token_contract_address TEXT NOT NULL,
+      amount_raw TEXT NOT NULL,
+      amount_strk TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'success', 'failed')),
+      tx_hash TEXT,
+      explorer_url TEXT,
+      error_details TEXT,
+      funded_by_address TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_onboarding_funding_status_updated_at
+      ON user_onboarding_funding(status, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS user_transaction_activity (
       id UUID PRIMARY KEY,
       privy_user_id TEXT NOT NULL REFERENCES app_users(privy_user_id) ON DELETE CASCADE,

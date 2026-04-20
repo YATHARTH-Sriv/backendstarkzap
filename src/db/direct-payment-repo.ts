@@ -54,13 +54,23 @@ export interface DirectPaymentRepository {
     details?: string;
     metadata?: Record<string, unknown>;
   }): Promise<void>;
-  searchUsersByUsername(query: string, limit: number, excludePrivyUserId: string): Promise<UserDirectoryEntry[]>;
+  searchUsersByUsername(
+    query: string,
+    limit: number,
+    excludePrivyUserId: string,
+  ): Promise<UserDirectoryEntry[]>;
   getUserByUsername(username: string): Promise<UserDirectoryEntry | null>;
-  getUserByWalletAddress(walletAddress: string): Promise<UserDirectoryEntry | null>;
-  listRecentContacts(privyUserId: string, limit: number): Promise<UserPaymentContact[]>;
+  getUserByWalletAddress(
+    walletAddress: string,
+  ): Promise<UserDirectoryEntry | null>;
+  listRecentContacts(
+    privyUserId: string,
+    limit: number,
+  ): Promise<UserPaymentContact[]>;
   loadBilateralHistory(params: {
     privyUserId: string;
     otherWalletAddress: string;
+    otherPrivyUserId?: string;
     limit: number;
     before?: string;
   }): Promise<DirectPaymentRecord[]>;
@@ -74,7 +84,13 @@ function normalizeLimit(limit: number, fallback: number, max: number): number {
   return Math.min(Math.trunc(limit), max);
 }
 
-export function createDirectPaymentRepository(db: Pool): DirectPaymentRepository {
+function normalizedAddressSql(valueExpression: string): string {
+  return `COALESCE(NULLIF(regexp_replace(LOWER(${valueExpression}), '^0x0*', ''), ''), '0')`;
+}
+
+export function createDirectPaymentRepository(
+  db: Pool,
+): DirectPaymentRepository {
   async function savePayment(entry: {
     senderPrivyUserId: string;
     senderUsername: string;
@@ -154,7 +170,11 @@ export function createDirectPaymentRepository(db: Pool): DirectPaymentRepository
     );
   }
 
-  async function searchUsersByUsername(query: string, limit: number, excludePrivyUserId: string) {
+  async function searchUsersByUsername(
+    query: string,
+    limit: number,
+    excludePrivyUserId: string,
+  ) {
     const boundedLimit = normalizeLimit(limit, 8, 25);
 
     const result = await db.query<{
@@ -187,7 +207,9 @@ export function createDirectPaymentRepository(db: Pool): DirectPaymentRepository
     }));
   }
 
-  async function getUserByUsername(username: string): Promise<UserDirectoryEntry | null> {
+  async function getUserByUsername(
+    username: string,
+  ): Promise<UserDirectoryEntry | null> {
     const result = await db.query<{
       privy_user_id: string;
       username: string;
@@ -221,7 +243,9 @@ export function createDirectPaymentRepository(db: Pool): DirectPaymentRepository
     };
   }
 
-  async function getUserByWalletAddress(walletAddress: string): Promise<UserDirectoryEntry | null> {
+  async function getUserByWalletAddress(
+    walletAddress: string,
+  ): Promise<UserDirectoryEntry | null> {
     const result = await db.query<{
       privy_user_id: string;
       username: string;
@@ -237,7 +261,7 @@ export function createDirectPaymentRepository(db: Pool): DirectPaymentRepository
         WHERE
           u.onboarding_completed = TRUE
           AND u.username IS NOT NULL
-          AND LOWER(w.wallet_address) = LOWER($1)
+          AND ${normalizedAddressSql("w.wallet_address")} = ${normalizedAddressSql("$1")}
         LIMIT 1
       `,
       [walletAddress],
@@ -307,27 +331,46 @@ export function createDirectPaymentRepository(db: Pool): DirectPaymentRepository
   async function loadBilateralHistory(params: {
     privyUserId: string;
     otherWalletAddress: string;
+    otherPrivyUserId?: string;
     limit: number;
     before?: string;
   }) {
     const boundedLimit = normalizeLimit(params.limit, 30, 100);
 
-    const clauses = [
-      `(
-        (sender_privy_user_id = $1 AND LOWER(recipient_wallet_address) = LOWER($2))
-        OR
-        (recipient_privy_user_id = $1 AND LOWER(sender_wallet_address) = LOWER($2))
-      )`,
-    ];
+    const values: Array<string | number> = [params.privyUserId];
+    let peerMatchClause: string;
 
-    const values: Array<string | number> = [params.privyUserId, params.otherWalletAddress];
+    if (params.otherPrivyUserId) {
+      values.push(params.otherPrivyUserId, params.otherWalletAddress);
+
+      peerMatchClause = `(
+        (sender_privy_user_id = $1 AND recipient_privy_user_id = $2)
+        OR
+        (recipient_privy_user_id = $1 AND sender_privy_user_id = $2)
+        OR
+        (sender_privy_user_id = $1 AND ${normalizedAddressSql("recipient_wallet_address")} = ${normalizedAddressSql("$3")})
+        OR
+        (recipient_privy_user_id = $1 AND ${normalizedAddressSql("sender_wallet_address")} = ${normalizedAddressSql("$3")})
+      )`;
+    } else {
+      values.push(params.otherWalletAddress);
+
+      peerMatchClause = `(
+        (sender_privy_user_id = $1 AND ${normalizedAddressSql("recipient_wallet_address")} = ${normalizedAddressSql("$2")})
+        OR
+        (recipient_privy_user_id = $1 AND ${normalizedAddressSql("sender_wallet_address")} = ${normalizedAddressSql("$2")})
+      )`;
+    }
+
+    const clauses = [peerMatchClause];
 
     if (params.before) {
-      clauses.push(`created_at < $3::timestamptz`);
+      const beforePlaceholder = `$${values.length + 1}`;
+      clauses.push(`created_at < ${beforePlaceholder}::timestamptz`);
       values.push(params.before);
     }
 
-    const limitPlaceholder = params.before ? "$4" : "$3";
+    const limitPlaceholder = `$${values.length + 1}`;
     values.push(boundedLimit);
 
     const result = await db.query<{
