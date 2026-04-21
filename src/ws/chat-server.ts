@@ -1,12 +1,21 @@
-import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { PrivyClient } from "@privy-io/node";
-import WebSocket, { WebSocketServer, type RawData } from "ws";
+import type { Server as HttpServer, IncomingMessage } from "node:http";
 import { v4 as uuidv4 } from "uuid";
+import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { ChatRepository } from "../db/chat-repo.ts";
 import type { UserProfileRepository } from "../db/user-profile-repo.ts";
-import { MSG, type ChatMessage, type ClientRecord, type IncomingClientMessage, type RoomUsersMessage, type ServerMessage } from "../types.ts";
+import {
+    MSG,
+    type ChatMessage,
+    type ClientRecord,
+    type IncomingClientMessage,
+    type RoomUsersMessage,
+    type ServerMessage,
+} from "../types.ts";
 
-function extractBearerToken(authorizationHeader: string | undefined): string | null {
+function extractBearerToken(
+  authorizationHeader: string | undefined,
+): string | null {
   if (!authorizationHeader) {
     return null;
   }
@@ -63,7 +72,10 @@ export function attachChatServer(
     void handleConnection(ws, req);
   });
 
-  async function handleConnection(ws: WebSocket, req: IncomingMessage): Promise<void> {
+  async function handleConnection(
+    ws: WebSocket,
+    req: IncomingMessage,
+  ): Promise<void> {
     const clientId = uuidv4();
     const token = extractWsToken(req);
 
@@ -116,7 +128,9 @@ export function attachChatServer(
     }
   }
 
-  async function syncClientUsername(client: ClientRecord): Promise<string | null> {
+  async function syncClientUsername(
+    client: ClientRecord,
+  ): Promise<string | null> {
     const profile = await userProfileRepo.getByPrivyUserId(client.privyUserId);
     client.username = profile?.username ?? null;
     return client.username;
@@ -172,7 +186,10 @@ export function attachChatServer(
 
   function sendJson(
     ws: WebSocket,
-    message: ServerMessage | RoomUsersMessage | { type: "connection"; clientId: string },
+    message:
+      | ServerMessage
+      | RoomUsersMessage
+      | { type: "connection"; clientId: string },
   ): void {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
@@ -183,7 +200,11 @@ export function attachChatServer(
     sendJson(ws, { type: MSG.ERROR, message });
   }
 
-  async function joinRoom(ws: WebSocket, client: ClientRecord, roomName?: string): Promise<void> {
+  async function joinRoom(
+    ws: WebSocket,
+    client: ClientRecord,
+    roomName?: string,
+  ): Promise<void> {
     const resolvedUsername = await syncClientUsername(client);
 
     if (!resolvedUsername) {
@@ -198,17 +219,37 @@ export function attachChatServer(
       return;
     }
 
-    await chatRepo.ensureChatRoom(normalizedRoomName);
+    const joinResult = await chatRepo.resolveJoinForUser({
+      roomName: normalizedRoomName,
+      privyUserId: client.privyUserId,
+      username: resolvedUsername,
+    });
+
+    if (joinResult.status === "pending" || joinResult.status === "denied") {
+      sendJson(ws, {
+        type: MSG.ROOM_ACCESS_UPDATE,
+        room: normalizedRoomName,
+        status: joinResult.status,
+        message: joinResult.message,
+      });
+      return;
+    }
 
     if (client.currentRoom === normalizedRoomName) {
-      const recentMessages = await chatRepo.loadRecentRoomMessages(normalizedRoomName, 50);
+      const recentMessages = await chatRepo.loadRecentRoomMessages(
+        normalizedRoomName,
+        50,
+      );
 
       sendJson(ws, { type: MSG.ROOM_JOINED, room: normalizedRoomName });
       sendJson(ws, {
         type: MSG.MESSAGE_HISTORY,
         messages: recentMessages,
       });
-      sendJson(ws, { type: MSG.ROOM_USERS, users: getUsersInRoom(normalizedRoomName) });
+      sendJson(ws, {
+        type: MSG.ROOM_USERS,
+        users: getUsersInRoom(normalizedRoomName),
+      });
       return;
     }
 
@@ -224,16 +265,20 @@ export function attachChatServer(
     client.currentRoom = normalizedRoomName;
     client.isTyping = false;
 
-    await chatRepo.upsertRoomMember(normalizedRoomName, resolvedUsername);
-
-    const recentMessages = await chatRepo.loadRecentRoomMessages(normalizedRoomName, 50);
+    const recentMessages = await chatRepo.loadRecentRoomMessages(
+      normalizedRoomName,
+      50,
+    );
 
     sendJson(ws, { type: MSG.ROOM_JOINED, room: normalizedRoomName });
     sendJson(ws, {
       type: MSG.MESSAGE_HISTORY,
       messages: recentMessages,
     });
-    sendJson(ws, { type: MSG.ROOM_USERS, users: getUsersInRoom(normalizedRoomName) });
+    sendJson(ws, {
+      type: MSG.ROOM_USERS,
+      users: getUsersInRoom(normalizedRoomName),
+    });
 
     broadcastToRoom(
       normalizedRoomName,
@@ -263,10 +308,6 @@ export function attachChatServer(
     client.currentRoom = null;
     client.isTyping = false;
 
-    if (client.username) {
-      await chatRepo.removeRoomMember(roomName, client.username);
-    }
-
     if (room) {
       room.delete(ws);
 
@@ -287,7 +328,11 @@ export function attachChatServer(
     }
   }
 
-  async function chatMessage(ws: WebSocket, client: ClientRecord, content?: string): Promise<void> {
+  async function chatMessage(
+    ws: WebSocket,
+    client: ClientRecord,
+    content?: string,
+  ): Promise<void> {
     const resolvedUsername = await syncClientUsername(client);
 
     if (!resolvedUsername) {
@@ -300,7 +345,18 @@ export function attachChatServer(
       return;
     }
 
-    const normalizedContent = typeof content === "string" ? content.trim().slice(0, 1000) : "";
+    const stillMember = await chatRepo.hasActiveRoomMembership(
+      client.currentRoom,
+      client.privyUserId,
+    );
+    if (!stillMember) {
+      sendError(ws, "Room access revoked");
+      await leaveRoom(ws, client, false);
+      return;
+    }
+
+    const normalizedContent =
+      typeof content === "string" ? content.trim().slice(0, 1000) : "";
     if (!normalizedContent) {
       sendError(ws, "Message content required");
       return;
@@ -335,7 +391,8 @@ export function attachChatServer(
       return;
     }
 
-    const normalizedContent = typeof content === "string" ? content.trim().slice(0, 1000) : "";
+    const normalizedContent =
+      typeof content === "string" ? content.trim().slice(0, 1000) : "";
     if (!normalizedContent) {
       sendError(ws, "Message content required");
       return;
@@ -396,7 +453,11 @@ export function attachChatServer(
     sendJson(ws, { ...message, type: "private_message_sent" });
   }
 
-  function setTyping(ws: WebSocket, client: ClientRecord, isTyping: boolean): void {
+  function setTyping(
+    ws: WebSocket,
+    client: ClientRecord,
+    isTyping: boolean,
+  ): void {
     if (!client.username || !client.currentRoom) {
       return;
     }
@@ -436,7 +497,9 @@ export function attachChatServer(
 
     return Array.from(room)
       .map((socket) => clients.get(socket))
-      .filter((client): client is ClientRecord & { username: string } => Boolean(client?.username))
+      .filter((client): client is ClientRecord & { username: string } =>
+        Boolean(client?.username),
+      )
       .map((client) => ({ id: client.id, username: client.username }));
   }
 

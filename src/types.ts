@@ -16,6 +16,7 @@ export const MSG = {
   ERROR: "error",
   ROOM_USERS: "room_users",
   MESSAGE_HISTORY: "message_history",
+  ROOM_ACCESS_UPDATE: "room_access_update",
 } as const;
 
 export interface ClientRecord {
@@ -59,10 +60,21 @@ export type ServerMessage =
   | { type: typeof MSG.USERNAME_SET; username: string }
   | { type: typeof MSG.ROOM_JOINED; room: string }
   | { type: typeof MSG.ROOM_LEFT; room: string }
+  | {
+      type: typeof MSG.ROOM_ACCESS_UPDATE;
+      room: string;
+      status: "pending" | "denied";
+      message: string;
+    }
   | { type: typeof MSG.USER_JOINED; username: string; userId: string }
   | { type: typeof MSG.USER_LEFT; username: string | null; userId: string }
   | ChatMessage
-  | { type: typeof MSG.TYPING_INDICATOR; userId: string; username: string; isTyping: boolean }
+  | {
+      type: typeof MSG.TYPING_INDICATOR;
+      userId: string;
+      username: string;
+      isTyping: boolean;
+    }
   | { type: typeof MSG.MESSAGE_HISTORY; messages: ChatMessage[] }
   | {
       type: typeof MSG.PRIVATE_MESSAGE | "private_message_sent";

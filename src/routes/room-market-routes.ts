@@ -1,18 +1,26 @@
 import express, { Router } from "express";
-import { v4 as uuidv4 } from "uuid";
 import type { StarkZap } from "starkzap";
+import { v4 as uuidv4 } from "uuid";
 import type { ChatRepository } from "../db/chat-repo.ts";
 import type { RoomMarketRepository } from "../db/room-market-repo.ts";
 import type { UserProfileRepository } from "../db/user-profile-repo.ts";
 import type { WalletRepository } from "../db/wallet-repo.ts";
 import type { RequestWithPrivyUser } from "../middleware/require-privy-user.ts";
-import { parseNonNegativeIntAsBigInt, parsePositiveIntAsBigInt, toFeltHex } from "../services/felt-utils.ts";
+import {
+    parseNonNegativeIntAsBigInt,
+    parsePositiveIntAsBigInt,
+    toFeltHex,
+} from "../services/felt-utils.ts";
 import { fetchExternalMarketPreviewByUrl } from "../services/market-source.ts";
 import { parseU256FromCallResult } from "../services/u256-utils.ts";
 
 const MAX_U32 = 4294967295n;
 
-function parsePageValue(raw: unknown, defaultValue: number, maxValue: number): number {
+function parsePageValue(
+  raw: unknown,
+  defaultValue: number,
+  maxValue: number,
+): number {
   if (typeof raw !== "string" || raw.trim().length === 0) {
     return defaultValue;
   }
@@ -124,11 +132,18 @@ async function readRoomMarketSnapshot(
   predictionContractAddress: string,
   marketId: bigint,
 ) {
-  const countRaw = await callSingleFelt(sdk, predictionContractAddress, "get_market_count", []);
+  const countRaw = await callSingleFelt(
+    sdk,
+    predictionContractAddress,
+    "get_market_count",
+    [],
+  );
   const marketCount = BigInt(countRaw);
 
   if (marketId >= marketCount) {
-    throw new MarketNotFoundError("marketId does not exist on prediction contract");
+    throw new MarketNotFoundError(
+      "marketId does not exist on prediction contract",
+    );
   }
 
   const marketCalldata = [toFeltHex(marketId)];
@@ -142,9 +157,24 @@ async function readRoomMarketSnapshot(
     resolvedRaw,
     winningOutcomeRaw,
   ] = await Promise.all([
-    callSingleFelt(sdk, predictionContractAddress, "get_market_question", marketCalldata),
-    callSingleFelt(sdk, predictionContractAddress, "get_market_creator", marketCalldata),
-    callSingleFelt(sdk, predictionContractAddress, "get_market_deadline", marketCalldata),
+    callSingleFelt(
+      sdk,
+      predictionContractAddress,
+      "get_market_question",
+      marketCalldata,
+    ),
+    callSingleFelt(
+      sdk,
+      predictionContractAddress,
+      "get_market_creator",
+      marketCalldata,
+    ),
+    callSingleFelt(
+      sdk,
+      predictionContractAddress,
+      "get_market_deadline",
+      marketCalldata,
+    ),
     sdk.callContract({
       contractAddress: predictionContractAddress,
       entrypoint: "get_market_yes_pool",
@@ -155,8 +185,18 @@ async function readRoomMarketSnapshot(
       entrypoint: "get_market_no_pool",
       calldata: marketCalldata,
     }),
-    callSingleFelt(sdk, predictionContractAddress, "get_market_resolved", marketCalldata),
-    callSingleFelt(sdk, predictionContractAddress, "get_market_winning_outcome", marketCalldata),
+    callSingleFelt(
+      sdk,
+      predictionContractAddress,
+      "get_market_resolved",
+      marketCalldata,
+    ),
+    callSingleFelt(
+      sdk,
+      predictionContractAddress,
+      "get_market_winning_outcome",
+      marketCalldata,
+    ),
   ]);
 
   const yesPool = parseU256FromCallResult(yesPoolResult).value;
@@ -198,308 +238,443 @@ export function createRoomMarketRouter(params: {
 
   const router = Router();
 
-  router.post("/api/chat/rooms/:room/external-markets", requirePrivyUser, async (req, res) => {
+  async function requireActiveRoomMember(
+    req: express.Request,
+    res: express.Response,
+    roomName: string,
+  ): Promise<string | null> {
     const typedReq = req as RequestWithPrivyUser;
     const userId = typedReq.privyUserId;
-    const roomName = normalizeRoomName(req.params.room);
-    const { url } = req.body as {
-      url?: unknown;
-    };
 
     if (!userId) {
-      return res.status(401).json({ error: "User not authenticated" });
+      res.status(401).json({ error: "User not authenticated" });
+      return null;
     }
 
-    if (!roomName) {
-      return res.status(400).json({ error: "room is required" });
+    const room = await chatRepo.getRoomByName(roomName);
+    if (!room) {
+      res.status(404).json({ error: "Room not found" });
+      return null;
     }
 
-    if (typeof url !== "string" || url.trim().length === 0) {
-      return res.status(400).json({ error: "url is required" });
+    const isMember = await chatRepo.hasActiveRoomMembership(roomName, userId);
+    if (!isMember) {
+      res
+        .status(403)
+        .json({ error: "Only active room members can access room markets" });
+      return null;
     }
 
-    try {
-      const profile = await userProfileRepo.getByPrivyUserId(userId);
-      if (!profile?.username) {
-        return res.status(409).json({ error: "Set username in onboarding before linking external markets" });
+    return userId;
+  }
+
+  router.post(
+    "/api/chat/rooms/:room/external-markets",
+    requirePrivyUser,
+    async (req, res) => {
+      const roomName = normalizeRoomName(req.params.room);
+      const { url } = req.body as {
+        url?: unknown;
+      };
+
+      if (!roomName) {
+        return res.status(400).json({ error: "room is required" });
       }
 
-      await chatRepo.ensureChatRoom(roomName);
+      const userId = await requireActiveRoomMember(req, res, roomName);
+      if (!userId) {
+        return;
+      }
 
-      await chatRepo.upsertChatProfile(profile.username);
+      if (typeof url !== "string" || url.trim().length === 0) {
+        return res.status(400).json({ error: "url is required" });
+      }
 
-      const preview = await fetchExternalMarketPreviewByUrl(url.trim());
-
-      const record = await roomMarketRepo.saveExternalMarketLink({
-        id: uuidv4(),
-        roomName,
-        source: preview.source,
-        sourceUrl: preview.sourceUrl,
-        externalId: preview.externalId,
-        title: preview.title,
-        description: preview.description,
-        image: preview.image,
-        outcomes: preview.outcomes,
-        outcomePrices: preview.outcomePrices,
-        closesAt: preview.closesAt,
-        rawPayload: preview.raw,
-        linkedByUsername: profile.username,
-      });
-
-      return res.status(201).json({
-        room: roomName,
-        externalMarket: record,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to save external market link";
-      return res.status(400).json({ error: message });
-    }
-  });
-
-  router.get("/api/chat/rooms/:room/external-markets", async (req, res) => {
-    const roomName = normalizeRoomName(req.params.room);
-    const limit = parsePageValue(req.query.limit, 20, 100);
-    const offset = parsePageValue(req.query.offset, 0, 1000);
-
-    if (!roomName) {
-      return res.status(400).json({ error: "room is required" });
-    }
-
-    try {
-      const externalMarkets = await roomMarketRepo.listExternalMarketLinks(roomName, limit, offset);
-      return res.json({ room: roomName, limit, offset, externalMarkets });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to list external market links";
-      return res.status(500).json({ error: message });
-    }
-  });
-
-  router.post("/api/chat/rooms/:room/markets/attach", requirePrivyUser, async (req, res) => {
-    const typedReq = req as RequestWithPrivyUser;
-    const userId = typedReq.privyUserId;
-    const roomName = normalizeRoomName(req.params.room);
-
-    if (!userId) {
-      return res.status(401).json({ error: "User not authenticated" });
-    }
-
-    if (!roomName) {
-      return res.status(400).json({ error: "room is required" });
-    }
-
-    const { marketId, externalMarketLinkId, title, deadlineUnix, createTxHash } = req.body as {
-      marketId?: unknown;
-      externalMarketLinkId?: unknown;
-      title?: unknown;
-      deadlineUnix?: unknown;
-      createTxHash?: unknown;
-    };
-
-    const parsedMarketId = parseNonNegativeIntAsBigInt(marketId);
-    if (parsedMarketId === null || parsedMarketId > MAX_U32) {
-      return res.status(400).json({ error: "marketId must be a valid u32 integer" });
-    }
-
-    const parsedDeadlineUnix =
-      deadlineUnix === undefined || deadlineUnix === null
-        ? null
-        : parsePositiveIntAsBigInt(deadlineUnix);
-
-    if ((deadlineUnix !== undefined && deadlineUnix !== null) && !parsedDeadlineUnix) {
-      return res.status(400).json({ error: "deadlineUnix must be a positive unix timestamp" });
-    }
-
-    const normalizedExternalMarketLinkId =
-      typeof externalMarketLinkId === "string" && externalMarketLinkId.trim().length > 0
-        ? externalMarketLinkId.trim()
-        : null;
-
-    const normalizedTitle =
-      typeof title === "string" && title.trim().length > 0 ? title.trim().slice(0, 120) : null;
-
-    const normalizedTxHash =
-      typeof createTxHash === "string" && createTxHash.trim().length > 0
-        ? createTxHash.trim()
-        : null;
-
-    const wallet = await walletRepo.getWalletByPrivyUserId(userId);
-    if (!wallet) {
-      return res.status(404).json({
-        error: "No Starknet wallet found for user. Call POST /api/wallet/starknet first.",
-      });
-    }
-
-    try {
-      await chatRepo.ensureChatRoom(roomName);
-
-      if (normalizedExternalMarketLinkId) {
-        const externalLink = await roomMarketRepo.getExternalMarketLinkById(normalizedExternalMarketLinkId);
-        if (!externalLink) {
-          return res.status(404).json({ error: "externalMarketLinkId not found" });
+      try {
+        const profile = await userProfileRepo.getByPrivyUserId(userId);
+        if (!profile?.username) {
+          return res
+            .status(409)
+            .json({
+              error:
+                "Set username in onboarding before linking external markets",
+            });
         }
 
-        if (externalLink.roomName !== roomName) {
-          return res.status(400).json({ error: "externalMarketLinkId does not belong to the provided room" });
+        await chatRepo.upsertChatProfile(profile.username);
+
+        const preview = await fetchExternalMarketPreviewByUrl(url.trim());
+
+        const record = await roomMarketRepo.saveExternalMarketLink({
+          id: uuidv4(),
+          roomName,
+          source: preview.source,
+          sourceUrl: preview.sourceUrl,
+          externalId: preview.externalId,
+          title: preview.title,
+          description: preview.description,
+          image: preview.image,
+          outcomes: preview.outcomes,
+          outcomePrices: preview.outcomePrices,
+          closesAt: preview.closesAt,
+          rawPayload: preview.raw,
+          linkedByUsername: profile.username,
+        });
+
+        return res.status(201).json({
+          room: roomName,
+          externalMarket: record,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to save external market link";
+        return res.status(400).json({ error: message });
+      }
+    },
+  );
+
+  router.get(
+    "/api/chat/rooms/:room/external-markets",
+    requirePrivyUser,
+    async (req, res) => {
+      const roomName = normalizeRoomName(req.params.room);
+      const limit = parsePageValue(req.query.limit, 20, 100);
+      const offset = parsePageValue(req.query.offset, 0, 1000);
+
+      if (!roomName) {
+        return res.status(400).json({ error: "room is required" });
+      }
+
+      const userId = await requireActiveRoomMember(req, res, roomName);
+      if (!userId) {
+        return;
+      }
+
+      try {
+        const externalMarkets = await roomMarketRepo.listExternalMarketLinks(
+          roomName,
+          limit,
+          offset,
+        );
+        return res.json({ room: roomName, limit, offset, externalMarkets });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to list external market links";
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  router.post(
+    "/api/chat/rooms/:room/markets/attach",
+    requirePrivyUser,
+    async (req, res) => {
+      const roomName = normalizeRoomName(req.params.room);
+
+      if (!roomName) {
+        return res.status(400).json({ error: "room is required" });
+      }
+
+      const userId = await requireActiveRoomMember(req, res, roomName);
+      if (!userId) {
+        return;
+      }
+
+      const {
+        marketId,
+        externalMarketLinkId,
+        title,
+        deadlineUnix,
+        createTxHash,
+      } = req.body as {
+        marketId?: unknown;
+        externalMarketLinkId?: unknown;
+        title?: unknown;
+        deadlineUnix?: unknown;
+        createTxHash?: unknown;
+      };
+
+      const parsedMarketId = parseNonNegativeIntAsBigInt(marketId);
+      if (parsedMarketId === null || parsedMarketId > MAX_U32) {
+        return res
+          .status(400)
+          .json({ error: "marketId must be a valid u32 integer" });
+      }
+
+      const parsedDeadlineUnix =
+        deadlineUnix === undefined || deadlineUnix === null
+          ? null
+          : parsePositiveIntAsBigInt(deadlineUnix);
+
+      if (
+        deadlineUnix !== undefined &&
+        deadlineUnix !== null &&
+        !parsedDeadlineUnix
+      ) {
+        return res
+          .status(400)
+          .json({ error: "deadlineUnix must be a positive unix timestamp" });
+      }
+
+      const normalizedExternalMarketLinkId =
+        typeof externalMarketLinkId === "string" &&
+        externalMarketLinkId.trim().length > 0
+          ? externalMarketLinkId.trim()
+          : null;
+
+      const normalizedTitle =
+        typeof title === "string" && title.trim().length > 0
+          ? title.trim().slice(0, 120)
+          : null;
+
+      const normalizedTxHash =
+        typeof createTxHash === "string" && createTxHash.trim().length > 0
+          ? createTxHash.trim()
+          : null;
+
+      const wallet = await walletRepo.getWalletByPrivyUserId(userId);
+      if (!wallet) {
+        return res.status(404).json({
+          error:
+            "No Starknet wallet found for user. Call POST /api/wallet/starknet first.",
+        });
+      }
+
+      try {
+        if (normalizedExternalMarketLinkId) {
+          const externalLink = await roomMarketRepo.getExternalMarketLinkById(
+            normalizedExternalMarketLinkId,
+          );
+          if (!externalLink) {
+            return res
+              .status(404)
+              .json({ error: "externalMarketLinkId not found" });
+          }
+
+          if (externalLink.roomName !== roomName) {
+            return res
+              .status(400)
+              .json({
+                error:
+                  "externalMarketLinkId does not belong to the provided room",
+              });
+          }
         }
-      }
 
-      const savedMarket = await roomMarketRepo.attachRoomContractMarket({
-        id: uuidv4(),
-        roomName,
-        predictionContractAddress,
-        marketId: parsedMarketId,
-        title: normalizedTitle ?? undefined,
-        deadlineUnix: parsedDeadlineUnix ?? undefined,
-        createTxHash: normalizedTxHash ?? undefined,
-        createdByPrivyUserId: userId,
-        createdByWalletAddress: wallet.address,
-        externalMarketLinkId: normalizedExternalMarketLinkId ?? undefined,
-      });
-
-      return res.status(201).json({
-        room: roomName,
-        market: savedMarket,
-      });
-    } catch (error) {
-      if (isUniqueViolation(error)) {
-        return res.status(409).json({
-          error: "Market already attached",
-          hint: "This on-chain market is already mapped in room metadata",
+        const savedMarket = await roomMarketRepo.attachRoomContractMarket({
+          id: uuidv4(),
+          roomName,
+          predictionContractAddress,
+          marketId: parsedMarketId,
+          title: normalizedTitle ?? undefined,
+          deadlineUnix: parsedDeadlineUnix ?? undefined,
+          createTxHash: normalizedTxHash ?? undefined,
+          createdByPrivyUserId: userId,
+          createdByWalletAddress: wallet.address,
+          externalMarketLinkId: normalizedExternalMarketLinkId ?? undefined,
         });
+
+        return res.status(201).json({
+          room: roomName,
+          market: savedMarket,
+        });
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          return res.status(409).json({
+            error: "Market already attached",
+            hint: "This on-chain market is already mapped in room metadata",
+          });
+        }
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to attach room market";
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  router.get(
+    "/api/chat/rooms/:room/markets",
+    requirePrivyUser,
+    async (req, res) => {
+      const roomName = normalizeRoomName(req.params.room);
+      const limit = parsePageValue(req.query.limit, 20, 100);
+      const offset = parsePageValue(req.query.offset, 0, 1000);
+
+      if (!roomName) {
+        return res.status(400).json({ error: "room is required" });
       }
 
-      const message = error instanceof Error ? error.message : "Failed to attach room market";
-      return res.status(500).json({ error: message });
-    }
-  });
+      const userId = await requireActiveRoomMember(req, res, roomName);
+      if (!userId) {
+        return;
+      }
 
-  router.get("/api/chat/rooms/:room/markets", async (req, res) => {
-    const roomName = normalizeRoomName(req.params.room);
-    const limit = parsePageValue(req.query.limit, 20, 100);
-    const offset = parsePageValue(req.query.offset, 0, 1000);
+      try {
+        const markets = await roomMarketRepo.listRoomContractMarkets(
+          roomName,
+          limit,
+          offset,
+        );
+        return res.json({ room: roomName, limit, offset, markets });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to list room markets";
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
 
-    if (!roomName) {
-      return res.status(400).json({ error: "room is required" });
-    }
+  router.get(
+    "/api/chat/rooms/:room/markets/:marketId/details",
+    requirePrivyUser,
+    async (req, res) => {
+      const roomName = normalizeRoomName(req.params.room);
+      const parsedMarketId = parseNonNegativeIntAsBigInt(req.params.marketId);
 
-    try {
-      const markets = await roomMarketRepo.listRoomContractMarkets(roomName, limit, offset);
-      return res.json({ room: roomName, limit, offset, markets });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to list room markets";
-      return res.status(500).json({ error: message });
-    }
-  });
+      if (!roomName) {
+        return res.status(400).json({ error: "room is required" });
+      }
 
-  router.get("/api/chat/rooms/:room/markets/:marketId/details", async (req, res) => {
-    const roomName = normalizeRoomName(req.params.room);
-    const parsedMarketId = parseNonNegativeIntAsBigInt(req.params.marketId);
+      if (parsedMarketId === null || parsedMarketId > MAX_U32) {
+        return res
+          .status(400)
+          .json({ error: "marketId must be a valid u32 integer" });
+      }
 
-    if (!roomName) {
-      return res.status(400).json({ error: "room is required" });
-    }
+      const userId = await requireActiveRoomMember(req, res, roomName);
+      if (!userId) {
+        return;
+      }
 
-    if (parsedMarketId === null || parsedMarketId > MAX_U32) {
-      return res.status(400).json({ error: "marketId must be a valid u32 integer" });
-    }
+      try {
+        const roomMarket = await roomMarketRepo.getRoomContractMarket(
+          roomName,
+          predictionContractAddress,
+          parsedMarketId,
+        );
 
-    try {
-      const roomMarket = await roomMarketRepo.getRoomContractMarket(
-        roomName,
-        predictionContractAddress,
-        parsedMarketId,
-      );
+        if (!roomMarket) {
+          return res.status(404).json({
+            error: "Room market mapping not found",
+            hint: "Attach the on-chain market to this room first",
+          });
+        }
 
-      if (!roomMarket) {
+        const chain = await readRoomMarketSnapshot(
+          sdk,
+          predictionContractAddress,
+          parsedMarketId,
+        );
+
+        return res.json({
+          room: roomName,
+          market: roomMarket,
+          chain,
+        });
+      } catch (error) {
+        if (error instanceof MarketNotFoundError) {
+          return res.status(404).json({ error: error.message });
+        }
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to read room market details";
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  router.get(
+    "/api/chat/rooms/:room/markets/:marketId/can-resolve",
+    requirePrivyUser,
+    async (req, res) => {
+      const roomName = normalizeRoomName(req.params.room);
+      const parsedMarketId = parseNonNegativeIntAsBigInt(req.params.marketId);
+
+      if (!roomName) {
+        return res.status(400).json({ error: "room is required" });
+      }
+
+      if (parsedMarketId === null || parsedMarketId > MAX_U32) {
+        return res
+          .status(400)
+          .json({ error: "marketId must be a valid u32 integer" });
+      }
+
+      const userId = await requireActiveRoomMember(req, res, roomName);
+      if (!userId) {
+        return;
+      }
+
+      const wallet = await walletRepo.getWalletByPrivyUserId(userId);
+      if (!wallet) {
         return res.status(404).json({
-          error: "Room market mapping not found",
-          hint: "Attach the on-chain market to this room first",
+          error:
+            "No Starknet wallet found for user. Call POST /api/wallet/starknet first.",
         });
       }
 
-      const chain = await readRoomMarketSnapshot(sdk, predictionContractAddress, parsedMarketId);
+      try {
+        const roomMarket = await roomMarketRepo.getRoomContractMarket(
+          roomName,
+          predictionContractAddress,
+          parsedMarketId,
+        );
 
-      return res.json({
-        room: roomName,
-        market: roomMarket,
-        chain,
-      });
-    } catch (error) {
-      if (error instanceof MarketNotFoundError) {
-        return res.status(404).json({ error: error.message });
-      }
+        if (!roomMarket) {
+          return res.status(404).json({
+            error: "Room market mapping not found",
+            hint: "Attach the on-chain market to this room first",
+          });
+        }
 
-      const message = error instanceof Error ? error.message : "Failed to read room market details";
-      return res.status(500).json({ error: message });
-    }
-  });
+        const chain = await readRoomMarketSnapshot(
+          sdk,
+          predictionContractAddress,
+          parsedMarketId,
+        );
 
-  router.get("/api/chat/rooms/:room/markets/:marketId/can-resolve", requirePrivyUser, async (req, res) => {
-    const typedReq = req as RequestWithPrivyUser;
-    const userId = typedReq.privyUserId;
-    const roomName = normalizeRoomName(req.params.room);
-    const parsedMarketId = parseNonNegativeIntAsBigInt(req.params.marketId);
+        const normalizedCaller = normalizeHexAddress(wallet.address);
+        const normalizedCreator = normalizeHexAddress(chain.creator);
 
-    if (!userId) {
-      return res.status(401).json({ error: "User not authenticated" });
-    }
+        const isCreator =
+          normalizedCaller !== null &&
+          normalizedCreator !== null &&
+          normalizedCaller === normalizedCreator;
+        const canResolve = isCreator && !chain.resolved;
 
-    if (!roomName) {
-      return res.status(400).json({ error: "room is required" });
-    }
-
-    if (parsedMarketId === null || parsedMarketId > MAX_U32) {
-      return res.status(400).json({ error: "marketId must be a valid u32 integer" });
-    }
-
-    const wallet = await walletRepo.getWalletByPrivyUserId(userId);
-    if (!wallet) {
-      return res.status(404).json({
-        error: "No Starknet wallet found for user. Call POST /api/wallet/starknet first.",
-      });
-    }
-
-    try {
-      const roomMarket = await roomMarketRepo.getRoomContractMarket(
-        roomName,
-        predictionContractAddress,
-        parsedMarketId,
-      );
-
-      if (!roomMarket) {
-        return res.status(404).json({
-          error: "Room market mapping not found",
-          hint: "Attach the on-chain market to this room first",
+        return res.json({
+          room: roomName,
+          marketId: parsedMarketId.toString(),
+          canResolve,
+          isCreator,
+          isResolved: chain.resolved,
+          callerWalletAddress: wallet.address,
+          marketCreator: chain.creator,
         });
+      } catch (error) {
+        if (error instanceof MarketNotFoundError) {
+          return res.status(404).json({ error: error.message });
+        }
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to evaluate resolver permissions";
+        return res.status(500).json({ error: message });
       }
-
-      const chain = await readRoomMarketSnapshot(sdk, predictionContractAddress, parsedMarketId);
-
-      const normalizedCaller = normalizeHexAddress(wallet.address);
-      const normalizedCreator = normalizeHexAddress(chain.creator);
-
-      const isCreator =
-        normalizedCaller !== null && normalizedCreator !== null && normalizedCaller === normalizedCreator;
-      const canResolve = isCreator && !chain.resolved;
-
-      return res.json({
-        room: roomName,
-        marketId: parsedMarketId.toString(),
-        canResolve,
-        isCreator,
-        isResolved: chain.resolved,
-        callerWalletAddress: wallet.address,
-        marketCreator: chain.creator,
-      });
-    } catch (error) {
-      if (error instanceof MarketNotFoundError) {
-        return res.status(404).json({ error: error.message });
-      }
-
-      const message = error instanceof Error ? error.message : "Failed to evaluate resolver permissions";
-      return res.status(500).json({ error: message });
-    }
-  });
+    },
+  );
 
   return router;
 }

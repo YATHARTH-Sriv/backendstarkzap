@@ -117,8 +117,65 @@ export async function initDatabase(db: Pool) {
 
     CREATE TABLE IF NOT EXISTS chat_rooms (
       room_name TEXT PRIMARY KEY,
+      visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'private')),
+      join_policy TEXT NOT NULL DEFAULT 'open' CHECK (join_policy IN ('open', 'approval', 'invite_only')),
+      created_by_privy_user_id TEXT REFERENCES app_users(privy_user_id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE chat_rooms
+      ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'public';
+
+    ALTER TABLE chat_rooms
+      ADD COLUMN IF NOT EXISTS join_policy TEXT NOT NULL DEFAULT 'open';
+
+    ALTER TABLE chat_rooms
+      ADD COLUMN IF NOT EXISTS created_by_privy_user_id TEXT REFERENCES app_users(privy_user_id) ON DELETE SET NULL;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chat_rooms_visibility_check'
+      ) THEN
+        ALTER TABLE chat_rooms
+          ADD CONSTRAINT chat_rooms_visibility_check
+          CHECK (visibility IN ('public', 'private'));
+      END IF;
+    END
+    $$;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chat_rooms_join_policy_check'
+      ) THEN
+        ALTER TABLE chat_rooms
+          ADD CONSTRAINT chat_rooms_join_policy_check
+          CHECK (join_policy IN ('open', 'approval', 'invite_only'));
+      END IF;
+    END
+    $$;
+
+    CREATE TABLE IF NOT EXISTS chat_room_memberships (
+      room_name TEXT NOT NULL REFERENCES chat_rooms(room_name) ON DELETE CASCADE,
+      privy_user_id TEXT NOT NULL REFERENCES app_users(privy_user_id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+      status TEXT NOT NULL CHECK (status IN ('active', 'pending', 'invited', 'removed', 'banned')),
+      created_by_privy_user_id TEXT REFERENCES app_users(privy_user_id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (room_name, privy_user_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_room_memberships_room_status
+      ON chat_room_memberships(room_name, status, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_chat_room_memberships_user_status
+      ON chat_room_memberships(privy_user_id, status, updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS chat_room_members (
       room_name TEXT NOT NULL REFERENCES chat_rooms(room_name) ON DELETE CASCADE,
