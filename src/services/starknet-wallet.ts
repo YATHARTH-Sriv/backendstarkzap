@@ -1,10 +1,19 @@
 import { PrivyClient } from "@privy-io/node";
-import { ArgentXV050Preset, ChainId, PrivySigner, type Call, type StarkZap } from "starkzap";
+import {
+  ArgentXV050Preset,
+  AvnuSwapProvider,
+  ChainId,
+  EkuboSwapProvider,
+  PrivySigner,
+  type Call,
+  type StarkZap,
+} from "starkzap";
 import type { WalletDeployFeeMode } from "../config/env.ts";
 import type { WalletRecord } from "../db/wallet-repo.ts";
 import {
   getErrorMessage,
   isLikelyFundingOrFeeConfigError,
+  isNonceTooOldError,
   isValidateOutOfGasError,
 } from "./error-utils.ts";
 
@@ -131,6 +140,8 @@ export function createStarknetWalletService(params: {
         signer,
         accountClass: ArgentXV050Preset,
       },
+      swapProviders: [new AvnuSwapProvider(), new EkuboSwapProvider()],
+      defaultSwapProviderId: "avnu",
     });
   }
 
@@ -145,6 +156,7 @@ export function createStarknetWalletService(params: {
   async function executeCallsWithOogRetry(
     userWallet: Awaited<ReturnType<typeof getUserWalletInterface>>,
     calls: Call[],
+    retryCount = 0,
   ): Promise<TransactionExecution> {
     try {
       const tx = await userWallet.execute(calls);
@@ -155,6 +167,13 @@ export function createStarknetWalletService(params: {
       };
     } catch (error) {
       const message = getErrorMessage(error);
+
+      if (isNonceTooOldError(message) && retryCount < 1) {
+        console.warn(`Nonce too old, retrying once... (Address: ${userWallet.getAccount().address})`);
+        // Small delay to let the mempool update if needed, though usually not necessary if it's just a local sync issue
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return executeCallsWithOogRetry(userWallet, calls, retryCount + 1);
+      }
 
       if (!isValidateOutOfGasError(message)) {
         throw error;

@@ -17,6 +17,8 @@ export interface AppConfig {
   databaseUrl: string;
   chainId: ChainId;
   port: number;
+  stakingEstimatedApy: number;
+  stakingFallbackPoolAddress: string;
 }
 
 function normalizeDatabaseUrl(rawUrl: string): string {
@@ -160,5 +162,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl: normalizeDatabaseUrl(databaseUrlRaw),
     chainId,
     port,
+    stakingEstimatedApy: Number(env.STAKING_ESTIMATED_APY ?? "4.8"),
+    stakingFallbackPoolAddress: env.STAKING_FALLBACK_POOL ?? "0x03588c95936917c9e6ba35e667ea33df501f595eb444301f7ecf1742a66f4676",
   };
 }

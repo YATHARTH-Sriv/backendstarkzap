@@ -4,25 +4,24 @@ import express from "express";
 import http from "node:http";
 import { createDbPool, createPrivyClient, createStarkZap } from "./config/clients.ts";
 import { loadConfig } from "./config/env.ts";
-import { createChatRepository } from "./db/chat-repo.ts";
 import { initDatabase } from "./db/init.ts";
-import { createRoomMarketRepository } from "./db/room-market-repo.ts";
 import { createTxActivityRepository } from "./db/tx-activity-repo.ts";
 import { createUserProfileRepository } from "./db/user-profile-repo.ts";
 import { createWalletRepository } from "./db/wallet-repo.ts";
 import { createOnboardingFundingRepository } from "./db/onboarding-funding-repo.ts";
 import { createRequirePrivyUser } from "./middleware/require-privy-user.ts";
 import { createCounterRouter } from "./routes/counter-routes.ts";
-import { createChatRouter } from "./routes/chat-routes.ts";
 import { createMarketSourceRouter } from "./routes/market-source-routes.ts";
 import { createMiscRouter } from "./routes/misc-routes.ts";
 import { createPredictionRouter } from "./routes/prediction-routes.ts";
 import { createProfileRouter } from "./routes/profile-routes.ts";
 import { createPaymentsRouter } from "./routes/payments-routes.ts";
-import { createRoomMarketRouter } from "./routes/room-market-routes.ts";
+import { createDefiRouter } from "./routes/defi-routes.ts";
+import { createSwapRouter } from "./routes/swap-routes.ts";
+
 import { createWalletRouter } from "./routes/wallet-routes.ts";
 import { createStarknetWalletService } from "./services/starknet-wallet.ts";
-import { attachChatServer } from "./ws/chat-server.ts";
+
 import { createDirectPaymentRepository } from "./db/direct-payment-repo.ts";
 
 dotenv.config();
@@ -38,8 +37,7 @@ const sdk = createStarkZap(config);
 const db = createDbPool(config);
 
 const walletRepo = createWalletRepository(db);
-const chatRepo = createChatRepository(db);
-const roomMarketRepo = createRoomMarketRepository(db);
+
 const txActivityRepo = createTxActivityRepository(db);
 const userProfileRepo = createUserProfileRepository(db);
 const directPaymentRepo = createDirectPaymentRepository(db);
@@ -54,34 +52,16 @@ const walletService = createStarknetWalletService({
 });
 
 app.use(createMiscRouter());
-app.use(
-  createChatRouter({
-    chatRepo,
-    requirePrivyUser,
-    userProfileRepo,
-  }),
-);
 app.use(createMarketSourceRouter());
 app.use(
   createProfileRouter({
     requirePrivyUser,
     walletRepo,
     userProfileRepo,
-    chatRepo,
     txActivityRepo,
   }),
 );
-app.use(
-  createRoomMarketRouter({
-    sdk,
-    predictionContractAddress: config.predictionContractAddress,
-    requirePrivyUser,
-    walletRepo,
-    userProfileRepo,
-    chatRepo,
-    roomMarketRepo,
-  }),
-);
+
 app.use(
   createWalletRouter({
     sdk,
@@ -111,6 +91,7 @@ app.use(
 app.use(
   createPredictionRouter({
     sdk,
+    chainId: config.chainId,
     predictionContractAddress: config.predictionContractAddress,
     strkTokenContractAddress: config.strkTokenContractAddress,
     requirePrivyUser,
@@ -130,13 +111,31 @@ app.use(
     txActivityRepo,
   }),
 );
+app.use(
+  createSwapRouter({
+    sdk,
+    chainId: config.chainId,
+    requirePrivyUser,
+    walletRepo,
+    walletService,
+    txActivityRepo,
+  }),
+);
+app.use(
+  createDefiRouter({
+    sdk,
+    chainId: config.chainId,
+    requirePrivyUser,
+    walletRepo,
+    walletService,
+    txActivityRepo,
+    estimatedApy: config.stakingEstimatedApy,
+    fallbackPoolAddress: config.stakingFallbackPoolAddress,
+  }),
+);
 
 const server = http.createServer(app);
-attachChatServer(server, {
-  chatRepo,
-  userProfileRepo,
-  privy,
-});
+
 
 async function main() {
   await initDatabase(db);

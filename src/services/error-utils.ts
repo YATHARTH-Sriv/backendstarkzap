@@ -17,3 +17,7 @@ export function isLikelyFundingOrFeeConfigError(message: string): boolean {
 export function isValidateOutOfGasError(message: string): boolean {
   return /(validate).*(out of gas)|(out of gas).*(validate)/i.test(message);
 }
+
+export function isNonceTooOldError(message: string): boolean {
+  return /NonceTooOld|Invalid transaction nonce/i.test(message);
+}

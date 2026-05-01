@@ -1,5 +1,4 @@
 import express, { Router } from "express";
-import type { ChatRepository } from "../db/chat-repo.ts";
 import type { TxActivityRepository } from "../db/tx-activity-repo.ts";
 import type { UserProfileRepository } from "../db/user-profile-repo.ts";
 import type { WalletRepository } from "../db/wallet-repo.ts";
@@ -28,10 +27,9 @@ export function createProfileRouter(params: {
   requirePrivyUser: express.RequestHandler;
   walletRepo: WalletRepository;
   userProfileRepo: UserProfileRepository;
-  chatRepo: ChatRepository;
   txActivityRepo: TxActivityRepository;
 }) {
-  const { requirePrivyUser, walletRepo, userProfileRepo, chatRepo, txActivityRepo } = params;
+  const { requirePrivyUser, walletRepo, userProfileRepo, txActivityRepo } = params;
   const router = Router();
 
   router.get("/api/profile/me", requirePrivyUser, async (req, res) => {
@@ -74,7 +72,6 @@ export function createProfileRouter(params: {
 
     try {
       const profile = await userProfileRepo.setUsername(userId, username);
-      await chatRepo.upsertChatProfile(username);
 
       return res.json({ profile });
     } catch (error) {

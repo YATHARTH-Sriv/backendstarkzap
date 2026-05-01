@@ -57,11 +57,30 @@ export function toFeltHex(value: bigint): string {
 
 export function stringToFelt252(str: string): string {
   const trimmed = str.slice(0, 31);
-  let hex = "0x";
+  let hex = "";
 
   for (let i = 0; i < trimmed.length; i++) {
-    hex += trimmed.charCodeAt(i).toString(16);
+    const charCode = trimmed.charCodeAt(i).toString(16);
+    hex += charCode.padStart(2, "0");
   }
 
-  return hex;
+  return `0x${hex}`;
+}
+
+export function felt252ToString(hex: string): string {
+  if (!hex || hex === "0x0" || hex === "0") return "";
+  
+  let cleanHex = hex.startsWith("0x") ? hex.slice(2) : hex;
+  // If hex length is odd, add a leading zero
+  if (cleanHex.length % 2 !== 0) {
+    cleanHex = "0" + cleanHex;
+  }
+  
+  try {
+    const buf = Buffer.from(cleanHex, "hex");
+    return buf.toString("ascii").replace(/\0/g, "");
+  } catch (e) {
+    console.error("Failed to parse felt as string", hex, e);
+    return hex;
+  }
 }
