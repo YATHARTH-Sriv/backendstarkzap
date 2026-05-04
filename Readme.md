@@ -1,5 +1,6 @@
 ## Server Code For Zen Mobile 
 
+Link To App: https://zenmobile.vercel.app/  <br/>
 This repo contains all the code login with privy username wallet creaion deploy wallet 
 
 1. send
