@@ -11,7 +11,8 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export function isLikelyFundingOrFeeConfigError(message: string): boolean {
-  return /(insufficient|not enough|balance|fee|gas|paymaster|sponsor|max fee)/i.test(message);
+  if (/insufficient liquidity/i.test(message)) return false;
+  return /(insufficient funds|insufficient balance|not enough|balance|fee|gas|paymaster|sponsor|max fee)/i.test(message);
 }
 
 export function isValidateOutOfGasError(message: string): boolean {
